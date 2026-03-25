@@ -9,7 +9,6 @@ const { redeemKey, resubscribeKey, getKeyByDiscordId, checkExpired } = require('
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// ─── Slash Commands ────────────────────────────────────────────────────────────
 const commands = [
     new SlashCommandBuilder()
         .setName('redeem_button')
@@ -19,10 +18,8 @@ const commands = [
     new SlashCommandBuilder()
         .setName('mystatus')
         .setDescription('Check the status of your LucidLua license'),
-
 ].map(c => c.toJSON());
 
-// ─── Register Commands ─────────────────────────────────────────────────────────
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(process.env.REDEMPTION_BOT_TOKEN);
     try {
@@ -37,9 +34,8 @@ async function registerCommands() {
     }
 }
 
-// ─── Panel Embed + Buttons ─────────────────────────────────────────────────────
 function buildRedeemPanel() {
-    const now = new Date();
+    const now     = new Date();
     const dateStr = `${now.getMonth()+1}/${now.getDate()}/${now.getFullYear()} ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 
     const embed = new EmbedBuilder()
@@ -67,7 +63,6 @@ function buildRedeemPanel() {
     return { embeds: [embed], components: [row] };
 }
 
-// ─── Modals ────────────────────────────────────────────────────────────────────
 function buildRedeemModal() {
     return new ModalBuilder()
         .setCustomId('modal_redeem')
@@ -120,9 +115,8 @@ function buildResubscribeModal() {
         );
 }
 
-// ─── Interaction Handler ───────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
-    checkExpired();
+    await checkExpired();
     const { user } = interaction;
 
     // ── Slash Commands ────────────────────────────────────────────────────────
@@ -135,7 +129,7 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.commandName === 'mystatus') {
             await interaction.deferReply({ ephemeral: true });
-            const data = getKeyByDiscordId(user.id);
+            const data = await getKeyByDiscordId(user.id);
 
             if (!data) {
                 return interaction.editReply({
@@ -166,17 +160,13 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // ── Buttons → open modals ─────────────────────────────────────────────────
+    // ── Buttons ───────────────────────────────────────────────────────────────
     if (interaction.isButton()) {
-        if (interaction.customId === 'open_redeem_modal') {
-            return interaction.showModal(buildRedeemModal());
-        }
-        if (interaction.customId === 'open_resubscribe_modal') {
-            return interaction.showModal(buildResubscribeModal());
-        }
+        if (interaction.customId === 'open_redeem_modal')      return interaction.showModal(buildRedeemModal());
+        if (interaction.customId === 'open_resubscribe_modal') return interaction.showModal(buildResubscribeModal());
     }
 
-    // ── Modal Submissions ─────────────────────────────────────────────────────
+    // ── Modals ────────────────────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
 
         // Redeem
@@ -198,7 +188,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            const result = redeemKey(licenseKey, machoKey, user.id, user.tag);
+            const result = await redeemKey(licenseKey, machoKey, user.id, user.tag);
 
             if (!result.success) {
                 return interaction.editReply({ embeds: [errorEmbed('Redemption Failed', result.reason)] });
@@ -245,7 +235,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            const result = resubscribeKey(licenseKey, newMachoKey, user.id, user.tag);
+            const result = await resubscribeKey(licenseKey, newMachoKey, user.id, user.tag);
 
             if (!result.success) {
                 return interaction.editReply({ embeds: [errorEmbed('Resubscribe Failed', result.reason)] });
@@ -269,11 +259,10 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
 function errorEmbed(title, description) {
     return new EmbedBuilder()
         .setTitle(`❌ ${title}`)
-        .setDescription(description)
+        .setDescription(description ?? 'An unknown error occurred.')
         .setColor(0xff4444)
         .setFooter({ text: 'LucidLua' })
         .setTimestamp();
@@ -287,7 +276,6 @@ async function logToStaffChannel(client, message) {
     } catch {}
 }
 
-// ─── Boot ──────────────────────────────────────────────────────────────────────
 client.once('ready', async () => {
     console.log(`[RedemptionBot] Logged in as ${client.user.tag}`);
     await registerCommands();

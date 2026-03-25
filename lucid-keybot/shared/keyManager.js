@@ -1,59 +1,29 @@
-const fs = require('fs');
-const path = require('path');
+const { Client } = require('pg');
 
-// Use DATA_DIR env var on Railway (point this to your Volume mount path)
-// Falls back to <repo root>/data for local development
-const dataDir = process.env.DATA_DIR || path.join(__dirname, '../data');
-const KEYS_FILE = path.join(dataDir, 'keys.json');
-const KEYS_TXT_FILE = path.join(dataDir, 'keys.txt');
+// ─── Database Connection ───────────────────────────────────────────────────────
+let db;
 
-// Ensure data directory exists
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-/**
- * Key format: LucidLua-XXXXX-XXXXX-XXXXX
- * Storage format:
- * {
- *   "LucidLua-XXXXX-XXXXX-XXXXX": {
- *     "machoKey": "user's MachoAuthenticationKey",
- *     "discordId": "123456789",
- *     "discordTag": "user#0000",
- *     "redeemedAt": "ISO date or null",
- *     "expiresAt": "ISO date or null (null = lifetime)",
- *     "createdAt": "ISO date",
- *     "createdBy": "staff discord tag",
- *     "active": true/false
- *   }
- * }
- */
-
-function loadKeys() {
-    if (!fs.existsSync(KEYS_FILE)) return {};
-    try {
-        return JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8'));
-    } catch {
-        return {};
-    }
+async function getDb() {
+    if (db) return db;
+    db = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    await db.connect();
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS keys (
+            license_key     TEXT PRIMARY KEY,
+            macho_key       TEXT,
+            discord_id      TEXT,
+            discord_tag     TEXT,
+            redeemed_at     TIMESTAMPTZ,
+            expires_at      TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_by      TEXT,
+            active          BOOLEAN NOT NULL DEFAULT TRUE
+        )
+    `);
+    return db;
 }
 
-function saveKeys(keys) {
-    fs.writeFileSync(KEYS_FILE, JSON.stringify(keys, null, 2));
-    rebuildTxt(keys);
-}
-
-// Rebuild the plain-text file that MachoWebRequest reads
-function rebuildTxt(keys) {
-    const now = new Date();
-    const lines = [];
-    for (const [licenseKey, data] of Object.entries(keys)) {
-        if (!data.active) continue;
-        if (!data.machoKey) continue;
-        if (data.expiresAt && new Date(data.expiresAt) < now) continue;
-        lines.push(data.machoKey);
-    }
-    fs.writeFileSync(KEYS_TXT_FILE, lines.join('\n'));
-}
-
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 function generateLicenseKey() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     const seg = () => Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -67,121 +37,162 @@ function calcExpiry(duration) {
     if (!days) throw new Error(`Unknown duration: ${duration}`);
     const d = new Date();
     d.setDate(d.getDate() + days);
-    return d.toISOString();
+    return d;
 }
 
-function createKey(duration, createdBy) {
-    const keys = loadKeys();
-    let licenseKey;
-    do { licenseKey = generateLicenseKey(); } while (keys[licenseKey]);
-
-    keys[licenseKey] = {
-        machoKey: null,
-        discordId: null,
-        discordTag: null,
-        redeemedAt: null,
-        expiresAt: calcExpiry(duration),
-        createdAt: new Date().toISOString(),
-        createdBy,
-        active: true,
+function rowToEntry(row) {
+    if (!row) return null;
+    return {
+        licenseKey:  row.license_key,
+        machoKey:    row.macho_key,
+        discordId:   row.discord_id,
+        discordTag:  row.discord_tag,
+        redeemedAt:  row.redeemed_at,
+        expiresAt:   row.expires_at,
+        createdAt:   row.created_at,
+        createdBy:   row.created_by,
+        active:      row.active,
     };
-    saveKeys(keys);
+}
+
+// ─── Exported Functions ────────────────────────────────────────────────────────
+async function createKey(duration, createdBy) {
+    const db = await getDb();
+    let licenseKey;
+
+    // Keep generating until we get a unique one
+    while (true) {
+        licenseKey = generateLicenseKey();
+        const exists = await db.query('SELECT 1 FROM keys WHERE license_key = $1', [licenseKey]);
+        if (exists.rowCount === 0) break;
+    }
+
+    const expiresAt = calcExpiry(duration);
+    await db.query(
+        `INSERT INTO keys (license_key, expires_at, created_by)
+         VALUES ($1, $2, $3)`,
+        [licenseKey, expiresAt, createdBy]
+    );
     return licenseKey;
 }
 
-function redeemKey(licenseKey, machoKey, discordId, discordTag) {
-    const keys = loadKeys();
-    const entry = keys[licenseKey];
+async function redeemKey(licenseKey, machoKey, discordId, discordTag) {
+    const db = await getDb();
+    const { rows } = await db.query('SELECT * FROM keys WHERE license_key = $1', [licenseKey]);
+    const entry = rows[0];
 
-    if (!entry) return { success: false, reason: 'Key not found.' };
+    if (!entry)        return { success: false, reason: 'Key not found.' };
     if (!entry.active) return { success: false, reason: 'This key has been deactivated.' };
-    if (entry.redeemedAt) return { success: false, reason: 'This key has already been redeemed.' };
-    if (entry.expiresAt && new Date(entry.expiresAt) < new Date()) {
+    if (entry.redeemed_at) return { success: false, reason: 'This key has already been redeemed.' };
+    if (entry.expires_at && new Date(entry.expires_at) < new Date()) {
         return { success: false, reason: 'This key has expired before redemption.' };
     }
 
-    for (const [k, v] of Object.entries(keys)) {
-        if (v.discordId === discordId && v.active) {
-            return { success: false, reason: `You already have an active key: \`${k}\`` };
-        }
+    // Check if discord user already has a key
+    const existing = await db.query(
+        'SELECT license_key FROM keys WHERE discord_id = $1 AND active = TRUE',
+        [discordId]
+    );
+    if (existing.rowCount > 0) {
+        return { success: false, reason: `You already have an active key: \`${existing.rows[0].license_key}\`` };
     }
 
-    for (const [k, v] of Object.entries(keys)) {
-        if (v.machoKey === machoKey && v.active) {
-            return { success: false, reason: 'That Authentication Key is already registered.' };
-        }
+    // Check if macho key already registered
+    const machoExists = await db.query(
+        'SELECT 1 FROM keys WHERE macho_key = $1 AND active = TRUE',
+        [machoKey]
+    );
+    if (machoExists.rowCount > 0) {
+        return { success: false, reason: 'That Authentication Key is already registered.' };
     }
 
-    entry.machoKey = machoKey;
-    entry.discordId = discordId;
-    entry.discordTag = discordTag;
-    entry.redeemedAt = new Date().toISOString();
-    saveKeys(keys);
+    await db.query(
+        `UPDATE keys SET macho_key=$1, discord_id=$2, discord_tag=$3, redeemed_at=NOW()
+         WHERE license_key=$4`,
+        [machoKey, discordId, discordTag, licenseKey]
+    );
 
-    return { success: true, entry };
+    const updated = await db.query('SELECT * FROM keys WHERE license_key = $1', [licenseKey]);
+    return { success: true, entry: rowToEntry(updated.rows[0]) };
 }
 
-function resubscribeKey(licenseKey, newMachoKey, discordId, discordTag) {
-    const keys = loadKeys();
-    const entry = keys[licenseKey];
+async function resubscribeKey(licenseKey, newMachoKey, discordId, discordTag) {
+    const db = await getDb();
+    const { rows } = await db.query('SELECT * FROM keys WHERE license_key = $1', [licenseKey]);
+    const entry = rows[0];
 
-    if (!entry) return { success: false, reason: 'Key not found.' };
+    if (!entry)        return { success: false, reason: 'Key not found.' };
     if (!entry.active) return { success: false, reason: 'This key has been deactivated.' };
-    if (!entry.redeemedAt) return { success: false, reason: 'This key has not been redeemed yet. Use Redeem Key instead.' };
-    if (entry.expiresAt && new Date(entry.expiresAt) < new Date()) {
+    if (!entry.redeemed_at) return { success: false, reason: 'This key has not been redeemed yet. Use Redeem Key instead.' };
+    if (entry.expires_at && new Date(entry.expires_at) < new Date()) {
         return { success: false, reason: 'This key has expired.' };
     }
-    if (entry.discordId !== discordId) {
+    if (entry.discord_id !== discordId) {
         return { success: false, reason: 'This key was not redeemed by your account.' };
     }
 
-    for (const [k, v] of Object.entries(keys)) {
-        if (k !== licenseKey && v.machoKey === newMachoKey && v.active) {
-            return { success: false, reason: 'That Authentication Key is already registered to a different license.' };
-        }
+    // Check new macho key not used on a different key
+    const machoExists = await db.query(
+        'SELECT 1 FROM keys WHERE macho_key = $1 AND active = TRUE AND license_key != $2',
+        [newMachoKey, licenseKey]
+    );
+    if (machoExists.rowCount > 0) {
+        return { success: false, reason: 'That Authentication Key is already registered to a different license.' };
     }
 
-    entry.machoKey = newMachoKey;
-    entry.discordTag = discordTag;
-    saveKeys(keys);
+    await db.query(
+        'UPDATE keys SET macho_key=$1, discord_tag=$2 WHERE license_key=$3',
+        [newMachoKey, discordTag, licenseKey]
+    );
 
-    return { success: true, entry };
+    const updated = await db.query('SELECT * FROM keys WHERE license_key = $1', [licenseKey]);
+    return { success: true, entry: rowToEntry(updated.rows[0]) };
 }
 
-function getKeyByDiscordId(discordId) {
-    const keys = loadKeys();
-    for (const [licenseKey, data] of Object.entries(keys)) {
-        if (data.discordId === discordId) return { licenseKey, ...data };
-    }
-    return null;
+async function revokeKey(licenseKey) {
+    const db = await getDb();
+    const result = await db.query(
+        'UPDATE keys SET active=FALSE WHERE license_key=$1',
+        [licenseKey]
+    );
+    return result.rowCount > 0;
 }
 
-function revokeKey(licenseKey) {
-    const keys = loadKeys();
-    if (!keys[licenseKey]) return false;
-    keys[licenseKey].active = false;
-    saveKeys(keys);
-    return true;
+async function getKeyByDiscordId(discordId) {
+    const db = await getDb();
+    const { rows } = await db.query(
+        'SELECT * FROM keys WHERE discord_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [discordId]
+    );
+    return rows[0] ? rowToEntry(rows[0]) : null;
 }
 
-function checkExpired() {
-    const keys = loadKeys();
-    const now = new Date();
-    let changed = false;
-    for (const data of Object.values(keys)) {
-        if (data.active && data.expiresAt && new Date(data.expiresAt) < now) {
-            data.active = false;
-            changed = true;
-        }
-    }
-    if (changed) saveKeys(keys);
+async function checkExpired() {
+    const db = await getDb();
+    await db.query(
+        `UPDATE keys SET active=FALSE
+         WHERE active=TRUE AND expires_at IS NOT NULL AND expires_at < NOW()`
+    );
 }
 
-function listKeys(activeOnly = true) {
-    const keys = loadKeys();
-    return Object.entries(keys)
-        .filter(([, v]) => !activeOnly || v.active)
-        .map(([licenseKey, v]) => ({ licenseKey, ...v }));
+async function listKeys(activeOnly = true) {
+    const db = await getDb();
+    const query = activeOnly
+        ? 'SELECT * FROM keys WHERE active=TRUE ORDER BY created_at DESC'
+        : 'SELECT * FROM keys ORDER BY created_at DESC';
+    const { rows } = await db.query(query);
+    return rows.map(rowToEntry);
+}
+
+// Returns newline-separated list of active macho keys for MachoWebRequest
+async function getActiveMachoKeys() {
+    const db = await getDb();
+    const { rows } = await db.query(
+        `SELECT macho_key FROM keys
+         WHERE active=TRUE AND macho_key IS NOT NULL
+         AND (expires_at IS NULL OR expires_at > NOW())`
+    );
+    return rows.map(r => r.macho_key).join('\n');
 }
 
 module.exports = {
@@ -192,5 +203,5 @@ module.exports = {
     listKeys,
     getKeyByDiscordId,
     checkExpired,
-    loadKeys,
+    getActiveMachoKeys,
 };

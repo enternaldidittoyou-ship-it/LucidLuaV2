@@ -1,11 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const KEYS_FILE = path.join(__dirname, '../data/keys.json');
-const KEYS_TXT_FILE = path.join(__dirname, '../data/keys.txt'); // served publicly for MachoWebRequest
+// Use DATA_DIR env var on Railway (point this to your Volume mount path)
+// Falls back to <repo root>/data for local development
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '../data');
+const KEYS_FILE = path.join(dataDir, 'keys.json');
+const KEYS_TXT_FILE = path.join(dataDir, 'keys.txt');
 
 // Ensure data directory exists
-const dataDir = path.join(__dirname, '../data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 /**
@@ -45,8 +47,8 @@ function rebuildTxt(keys) {
     const lines = [];
     for (const [licenseKey, data] of Object.entries(keys)) {
         if (!data.active) continue;
-        if (!data.machoKey) continue; // not yet redeemed
-        if (data.expiresAt && new Date(data.expiresAt) < now) continue; // expired
+        if (!data.machoKey) continue;
+        if (data.expiresAt && new Date(data.expiresAt) < now) continue;
         lines.push(data.machoKey);
     }
     fs.writeFileSync(KEYS_TXT_FILE, lines.join('\n'));
@@ -58,7 +60,6 @@ function generateLicenseKey() {
     return `LucidLua-${seg()}-${seg()}-${seg()}`;
 }
 
-// duration options: '1d', '7d', '30d', '90d', '365d', 'lifetime'
 function calcExpiry(duration) {
     if (duration === 'lifetime') return null;
     const map = { '1d': 1, '7d': 7, '30d': 30, '90d': 90, '365d': 365 };
@@ -99,17 +100,15 @@ function redeemKey(licenseKey, machoKey, discordId, discordTag) {
         return { success: false, reason: 'This key has expired before redemption.' };
     }
 
-    // Check if this discordId already has an active key
     for (const [k, v] of Object.entries(keys)) {
         if (v.discordId === discordId && v.active) {
             return { success: false, reason: `You already have an active key: \`${k}\`` };
         }
     }
 
-    // Check if this machoKey is already registered
     for (const [k, v] of Object.entries(keys)) {
         if (v.machoKey === machoKey && v.active) {
-            return { success: false, reason: 'That Macho Authentication Key is already registered.' };
+            return { success: false, reason: 'That Authentication Key is already registered.' };
         }
     }
 
@@ -117,6 +116,33 @@ function redeemKey(licenseKey, machoKey, discordId, discordTag) {
     entry.discordId = discordId;
     entry.discordTag = discordTag;
     entry.redeemedAt = new Date().toISOString();
+    saveKeys(keys);
+
+    return { success: true, entry };
+}
+
+function resubscribeKey(licenseKey, newMachoKey, discordId, discordTag) {
+    const keys = loadKeys();
+    const entry = keys[licenseKey];
+
+    if (!entry) return { success: false, reason: 'Key not found.' };
+    if (!entry.active) return { success: false, reason: 'This key has been deactivated.' };
+    if (!entry.redeemedAt) return { success: false, reason: 'This key has not been redeemed yet. Use Redeem Key instead.' };
+    if (entry.expiresAt && new Date(entry.expiresAt) < new Date()) {
+        return { success: false, reason: 'This key has expired.' };
+    }
+    if (entry.discordId !== discordId) {
+        return { success: false, reason: 'This key was not redeemed by your account.' };
+    }
+
+    for (const [k, v] of Object.entries(keys)) {
+        if (k !== licenseKey && v.machoKey === newMachoKey && v.active) {
+            return { success: false, reason: 'That Authentication Key is already registered to a different license.' };
+        }
+    }
+
+    entry.machoKey = newMachoKey;
+    entry.discordTag = discordTag;
     saveKeys(keys);
 
     return { success: true, entry };
@@ -149,38 +175,6 @@ function checkExpired() {
         }
     }
     if (changed) saveKeys(keys);
-}
-
-// Resubscribe: swap the machoKey on an already-redeemed active key
-// The key must already be redeemed by this user (matched by licenseKey + discordId)
-function resubscribeKey(licenseKey, newMachoKey, discordId, discordTag) {
-    const keys = loadKeys();
-    const entry = keys[licenseKey];
-
-    if (!entry) return { success: false, reason: 'Key not found.' };
-    if (!entry.active) return { success: false, reason: 'This key has been deactivated.' };
-    if (!entry.redeemedAt) return { success: false, reason: 'This key has not been redeemed yet. Use Redeem Key instead.' };
-    if (entry.expiresAt && new Date(entry.expiresAt) < new Date()) {
-        return { success: false, reason: 'This key has expired.' };
-    }
-
-    // Security: only the original redeemer can resubscribe their own key
-    if (entry.discordId !== discordId) {
-        return { success: false, reason: 'This key was not redeemed by your account.' };
-    }
-
-    // Check new macho key isn't already used on a different key
-    for (const [k, v] of Object.entries(keys)) {
-        if (k !== licenseKey && v.machoKey === newMachoKey && v.active) {
-            return { success: false, reason: 'That Authentication Key is already registered to a different license.' };
-        }
-    }
-
-    entry.machoKey    = newMachoKey;
-    entry.discordTag  = discordTag; // update tag in case they changed username
-    saveKeys(keys);
-
-    return { success: true, entry };
 }
 
 function listKeys(activeOnly = true) {

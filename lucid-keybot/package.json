@@ -1,0 +1,17 @@
+{
+  "name": "lucid-keybot",
+  "version": "1.0.0",
+  "description": "LucidLua Discord key management bots",
+  "main": "keys-server.js",
+  "scripts": {
+    "start:redemption": "node redemption-bot/index.js",
+    "start:keygen":     "node keygen-bot/index.js",
+    "start:server":     "node keys-server.js",
+    "start:all":        "concurrently \"npm run start:redemption\" \"npm run start:keygen\" \"npm run start:server\""
+  },
+  "dependencies": {
+    "discord.js":   "^14.14.1",
+    "dotenv":       "^16.4.5",
+    "concurrently": "^8.2.2"
+  }
+}

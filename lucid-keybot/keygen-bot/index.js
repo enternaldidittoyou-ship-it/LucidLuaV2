@@ -1,7 +1,8 @@
 require('dotenv').config();
 const {
     Client, GatewayIntentBits, SlashCommandBuilder,
-    EmbedBuilder, REST, Routes, PermissionFlagsBits
+    EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    REST, Routes, PermissionFlagsBits
 } = require('discord.js');
 const { createKey, revokeKey, listKeys, checkExpired } = require('../shared/keyManager');
 
@@ -16,7 +17,6 @@ const DURATION_CHOICES = [
     { name: 'Lifetime', value: 'lifetime' },
 ];
 
-// ─── Slash Commands ────────────────────────────────────────────────────────────
 const commands = [
     new SlashCommandBuilder()
         .setName('genkey')
@@ -37,7 +37,7 @@ const commands = [
         .setDescription('[STAFF] Revoke a license key')
         .addStringOption(o => o
             .setName('key')
-            .setDescription('The license key to revoke (LucidLua-XXXXX-XXXXX-XXXXX)')
+            .setDescription('The license key to revoke')
             .setRequired(true)),
 
     new SlashCommandBuilder()
@@ -57,7 +57,6 @@ const commands = [
 
 ].map(c => c.toJSON());
 
-// ─── Register Commands ─────────────────────────────────────────────────────────
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(process.env.KEYGEN_BOT_TOKEN);
     try {
@@ -72,21 +71,18 @@ async function registerCommands() {
     }
 }
 
-// ─── Role Check ────────────────────────────────────────────────────────────────
 function hasStaffRole(member) {
     const staffRoleId = process.env.STAFF_ROLE_ID;
     if (!staffRoleId) return member.permissions.has(PermissionFlagsBits.Administrator);
     return member.roles.cache.has(staffRoleId);
 }
 
-// ─── Interaction Handler ───────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-    checkExpired();
+    await checkExpired();
 
     const { commandName, member, user } = interaction;
 
-    // ── Role Guard ───────────────────────────────────────────────────────────
     if (!hasStaffRole(member)) {
         return interaction.reply({
             embeds: [errorEmbed('Access Denied', 'You do not have permission to use staff commands.')],
@@ -104,11 +100,11 @@ client.on('interactionCreate', async (interaction) => {
 
         const generatedKeys = [];
         for (let i = 0; i < amount; i++) {
-            const key = createKey(duration, user.tag);
+            const key = await createKey(duration, user.tag);
             generatedKeys.push(key);
         }
 
-        const keyList = generatedKeys.map((k, i) => `\`${k}\``).join('\n');
+        const keyList = generatedKeys.map(k => `\`${k}\``).join('\n');
 
         const embed = new EmbedBuilder()
             .setTitle(`🔑 Generated ${amount} Key${amount > 1 ? 's' : ''}`)
@@ -123,19 +119,15 @@ client.on('interactionCreate', async (interaction) => {
             .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
-
-        // Log
-        logToStaffChannel(client,
-            `🔑 **${user.tag}** generated **${amount}** key(s) (${label}):\n${keyList}`
-        );
+        logToStaffChannel(client, `🔑 **${user.tag}** generated **${amount}** key(s) (${label}):\n${keyList}`);
     }
 
     // ── /revokekey ───────────────────────────────────────────────────────────
     if (commandName === 'revokekey') {
         await interaction.deferReply({ ephemeral: true });
 
-        const key = interaction.options.getString('key').trim().toUpperCase();
-        const success = revokeKey(key);
+        const key     = interaction.options.getString('key').trim().toUpperCase();
+        const success = await revokeKey(key);
 
         if (!success) {
             return interaction.editReply({
@@ -146,7 +138,7 @@ client.on('interactionCreate', async (interaction) => {
         const embed = new EmbedBuilder()
             .setTitle('🔴 Key Revoked')
             .setColor(0xff4444)
-            .setDescription(`Key \`${key}\` has been deactivated and the user will no longer authenticate.`)
+            .setDescription(`Key \`${key}\` has been deactivated.`)
             .setFooter({ text: `Revoked by ${user.tag}` })
             .setTimestamp();
 
@@ -159,7 +151,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ ephemeral: true });
 
         const activeOnly = interaction.options.getBoolean('active_only') ?? true;
-        const keys = listKeys(activeOnly);
+        const keys       = await listKeys(activeOnly);
 
         if (keys.length === 0) {
             return interaction.editReply({
@@ -167,14 +159,13 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
 
-        // Paginate: show up to 20
         const shown = keys.slice(0, 20);
-        const now = new Date();
+        const now   = new Date();
 
         const rows = shown.map(k => {
-            const redeemed  = k.machoKey ? '✅' : '⏳';
-            const expired   = k.expiresAt && new Date(k.expiresAt) < now ? '💀' : '';
-            const expLabel  = k.expiresAt
+            const redeemed = k.machoKey ? '✅' : '⏳';
+            const expired  = k.expiresAt && new Date(k.expiresAt) < now ? '💀' : '';
+            const expLabel = k.expiresAt
                 ? `<t:${Math.floor(new Date(k.expiresAt).getTime() / 1000)}:d>`
                 : '∞';
             return `${redeemed}${expired} \`${k.licenseKey}\` — ${expLabel} — ${k.discordTag ?? '_unredeemed_'}`;
@@ -184,7 +175,7 @@ client.on('interactionCreate', async (interaction) => {
             .setTitle(`📋 Keys (${keys.length} total${activeOnly ? ', active only' : ''})`)
             .setColor(0x5865f2)
             .setDescription(rows.length > 4000 ? rows.slice(0, 4000) + '…' : rows)
-            .setFooter({ text: `✅ = redeemed  ⏳ = unredeemed  💀 = expired` })
+            .setFooter({ text: '✅ redeemed  ⏳ unredeemed  💀 expired' })
             .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
@@ -195,7 +186,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ ephemeral: true });
 
         const keyInput = interaction.options.getString('key').trim().toUpperCase();
-        const keys     = listKeys(false);
+        const keys     = await listKeys(false);
         const entry    = keys.find(k => k.licenseKey === keyInput);
 
         if (!entry) {
@@ -211,15 +202,15 @@ client.on('interactionCreate', async (interaction) => {
             .setTitle('🔎 Key Info')
             .setColor(entry.active && !expired ? 0x00ff88 : 0xff4444)
             .addFields(
-                { name: '🔑 Key',          value: `\`${entry.licenseKey}\``, inline: false },
-                { name: '🎮 Macho Key',    value: entry.machoKey ? `\`${entry.machoKey}\`` : '_Not redeemed_', inline: false },
-                { name: '👤 Discord User', value: entry.discordTag ?? '_None_',           inline: true },
-                { name: '🆔 Discord ID',   value: entry.discordId  ?? '_None_',           inline: true },
+                { name: '🔑 Key',          value: `\`${entry.licenseKey}\``,                    inline: false },
+                { name: '🔐 Auth Key',     value: entry.machoKey ? `\`${entry.machoKey}\`` : '_Not redeemed_', inline: false },
+                { name: '👤 Discord User', value: entry.discordTag ?? '_None_',                 inline: true  },
+                { name: '🆔 Discord ID',   value: entry.discordId  ?? '_None_',                 inline: true  },
                 { name: '📅 Expires',      value: entry.expiresAt
                     ? `<t:${Math.floor(new Date(entry.expiresAt).getTime() / 1000)}:F>`
-                    : '**Lifetime**',                                                      inline: true },
+                    : '**Lifetime**',                                                            inline: true  },
                 { name: '📌 Status',       value: !entry.active ? '🔴 Revoked' : expired ? '🔴 Expired' : entry.machoKey ? '🟢 Active' : '🟡 Unredeemed', inline: true },
-                { name: '🛠️ Created By',  value: entry.createdBy ?? 'Unknown',            inline: true },
+                { name: '🛠️ Created By',  value: entry.createdBy ?? 'Unknown',                 inline: true  },
                 { name: '📆 Created',      value: `<t:${Math.floor(new Date(entry.createdAt).getTime() / 1000)}:D>`, inline: true },
             )
             .setTimestamp();
@@ -228,7 +219,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
 function errorEmbed(title, description) {
     return new EmbedBuilder()
         .setTitle(`❌ ${title}`)
@@ -246,7 +236,6 @@ async function logToStaffChannel(client, message) {
     } catch {}
 }
 
-// ─── Boot ──────────────────────────────────────────────────────────────────────
 client.once('ready', async () => {
     console.log(`[KeygenBot] Logged in as ${client.user.tag}`);
     await registerCommands();

@@ -239,7 +239,7 @@ if (interaction.commandName === 'blacklist') {
         .setFooter({ text: `Blacklisted by ${user.tag}` })
         .setTimestamp();
     await interaction.editReply({ embeds: [embed] });
-    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \\`${targetId}\\`${reason ? ` — *${reason}*` : ''}`);
+    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\\`${reason ? ` — *${reason}*` : ''}`);
 }
             if (sub === 'remove') {
                 const targetId = interaction.options.getString('user_id').trim();

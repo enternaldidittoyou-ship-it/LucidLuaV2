@@ -72,9 +72,10 @@ async function registerCommands() {
 }
 
 function hasStaffRole(member) {
-    const staffRoleId = process.env.STAFF_ROLE_ID;
-    if (!staffRoleId) return member.permissions.has(PermissionFlagsBits.Administrator);
-    return member.roles.cache.has(staffRoleId);
+ const staffRoleIds = process.env.STAFF_ROLE_IDS;
+ if (!staffRoleIds) return member.permissions.has(PermissionFlagsBits.Administrator);
+ const roles = staffRoleIds.split(',').map(id => id.trim());
+ return member.roles.cache.some(role => roles.includes(role.id));
 }
 
 client.on('interactionCreate', async (interaction) => {

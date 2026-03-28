@@ -12,6 +12,13 @@ const {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
+function isStaff(member) {
+    if (!process.env.STAFF_ROLE_IDS) return false;
+    const staffRoles = process.env.STAFF_ROLE_IDS.split(',').map(id => id.trim());
+    return member.roles.cache.some(role => staffRoles.includes(role.id));
+}
+
+
 const commands = [
     new SlashCommandBuilder()
         .setName('redeem_button')
@@ -153,12 +160,14 @@ client.on('interactionCreate', async (interaction) => {
     const { user } = interaction;
 
     // ── Slash Commands ────────────────────────────────────────────────────────
-    if (interaction.isChatInputCommand()) {
-
-        if (interaction.commandName === 'redeem_button') {
-            await interaction.reply({ content: '✅ Panel posted!', ephemeral: true });
-            await interaction.channel.send(buildRedeemPanel());
+if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === 'redeem_button') {
+        if (!isStaff(interaction.member)) {
+            return interaction.reply({ content: '❌ You need a staff role to use this command.', ephemeral: true });
         }
+        await interaction.reply({ content: '✅ Panel posted!', ephemeral: true });
+        await interaction.channel.send(buildRedeemPanel());
+    }
 
         if (interaction.commandName === 'mystatus') {
             await interaction.deferReply({ ephemeral: true });
@@ -192,27 +201,29 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        if (interaction.commandName === 'blacklist') {
-            await interaction.deferReply({ ephemeral: true });
-            const sub = interaction.options.getSubcommand();
-
-if (sub === 'add') {
-    const machoKey = interaction.options.getString('macho_auth_key').trim();
-    const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
-    const reason = interaction.options.getString('reason') ?? null;
-    
-    // Look up the key in database to get discord_id
-    const db = await require('../shared/keyManager').getDb();
-    const { rows } = await db.query(
-        'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
-        [machoKey, licenseKey]
-    );
-    
-    if (rows.length === 0) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
-        });
+if (interaction.commandName === 'blacklist') {
+    if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ You need a staff role to use this command.', ephemeral: true });
     }
+    await interaction.deferReply({ ephemeral: true });
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'add') {
+        const machoKey = interaction.options.getString('macho_auth_key').trim();
+        const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
+        const reason = interaction.options.getString('reason') ?? null;
+        
+        // Look up the key in database to get discord_id
+        const db = await require('../shared/keyManager').getDb();
+        const { rows } = await db.query(
+            'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
+            [machoKey, licenseKey]
+        );
+        
+        if (rows.length === 0) {
+            return interaction.editReply({
+                embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
+            });
+        }
     
     const targetId = rows[0].discord_id;
     await blacklistUser(targetId, user.tag, reason);

@@ -26,17 +26,21 @@ const commands = [
         .setName('blacklist')
         .setDescription('[ADMIN] Manage the redemption blacklist')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addSubcommand(sub => sub
-            .setName('add')
-            .setDescription('Blacklist a user from redeeming keys')
-            .addStringOption(opt => opt
-                .setName('user_id')
-                .setDescription('Discord user ID to blacklist')
-                .setRequired(true))
-            .addStringOption(opt => opt
-                .setName('reason')
-                .setDescription('Reason for blacklisting')
-                .setRequired(false)))
+.addSubcommand(sub => sub
+    .setName('add')
+    .setDescription('Blacklist a user by macho auth key and license key')
+    .addStringOption(opt => opt
+        .setName('macho_auth_key')
+        .setDescription('Macho authentication key')
+        .setRequired(true))
+    .addStringOption(opt => opt
+        .setName('license_key')
+        .setDescription('LucidLua license key')
+        .setRequired(true))
+    .addStringOption(opt => opt
+        .setName('reason')
+        .setDescription('Reason for blacklisting')
+        .setRequired(false)))
         .addSubcommand(sub => sub
             .setName('remove')
             .setDescription('Remove a user from the blacklist')
@@ -192,23 +196,40 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply({ ephemeral: true });
             const sub = interaction.options.getSubcommand();
 
-            if (sub === 'add') {
-                const targetId = interaction.options.getString('user_id').trim();
-                const reason   = interaction.options.getString('reason') ?? null;
-                await blacklistUser(targetId, user.tag, reason);
-                const embed = new EmbedBuilder()
-                    .setTitle('🚫 User Blacklisted')
-                    .setColor(0xff4444)
-                    .addFields(
-                        { name: '👤 User ID', value: targetId, inline: true },
-                        { name: '📝 Reason',  value: reason ?? 'No reason provided', inline: true },
-                    )
-                    .setFooter({ text: `Blacklisted by ${user.tag}` })
-                    .setTimestamp();
-                await interaction.editReply({ embeds: [embed] });
-                logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\`${reason ? ` — *${reason}*` : ''}`);
-            }
-
+if (sub === 'add') {
+    const machoKey = interaction.options.getString('macho_auth_key').trim();
+    const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
+    const reason = interaction.options.getString('reason') ?? null;
+    
+    // Look up the key in database to get discord_id
+    const db = await require('../shared/keyManager').getDb();
+    const { rows } = await db.query(
+        'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
+        [machoKey, licenseKey]
+    );
+    
+    if (rows.length === 0) {
+        return interaction.editReply({
+            embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
+        });
+    }
+    
+    const targetId = rows[0].discord_id;
+    await blacklistUser(targetId, user.tag, reason);
+    
+    const embed = new EmbedBuilder()
+        .setTitle('🚫 User Blacklisted')
+        .setColor(0xff4444)
+        .addFields(
+            { name: '👤 User ID', value: targetId, inline: true },
+            { name: '🔑 License Key', value: licenseKey, inline: true },
+            { name: '📝 Reason', value: reason ?? 'No reason provided', inline: true },
+        )
+        .setFooter({ text: `Blacklisted by ${user.tag}` })
+        .setTimestamp();
+    await interaction.editReply({ embeds: [embed] });
+    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \\`${targetId}\\`${reason ? ` — *${reason}*` : ''}`);
+}
             if (sub === 'remove') {
                 const targetId = interaction.options.getString('user_id').trim();
                 const removed  = await unblacklistUser(targetId);

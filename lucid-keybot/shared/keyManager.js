@@ -28,6 +28,14 @@ async function getDb() {
                 active       BOOLEAN NOT NULL DEFAULT TRUE
             )
         `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS blacklist (
+                discord_id      TEXT PRIMARY KEY,
+                blacklisted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                blacklisted_by  TEXT,
+                reason          TEXT
+            )
+        `);
         initialized = true;
         console.log('[KeyManager] Database ready.');
     }
@@ -196,6 +204,51 @@ async function getActiveMachoKeys() {
     return rows.map(r => r.macho_key).join('\n');
 }
 
+// ─── Blacklist Functions ───────────────────────────────────────────────────────
+async function isBlacklisted(discordId) {
+    const db           = await getDb();
+    const { rowCount } = await db.query(
+        'SELECT 1 FROM blacklist WHERE discord_id = $1',
+        [discordId]
+    );
+    return rowCount > 0;
+}
+
+async function blacklistUser(discordId, blacklistedBy, reason) {
+    const db = await getDb();
+    await db.query(
+        `INSERT INTO blacklist (discord_id, blacklisted_by, reason)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (discord_id) DO UPDATE
+             SET blacklisted_at = NOW(),
+                 blacklisted_by = EXCLUDED.blacklisted_by,
+                 reason         = EXCLUDED.reason`,
+        [discordId, blacklistedBy ?? null, reason ?? null]
+    );
+}
+
+async function unblacklistUser(discordId) {
+    const db     = await getDb();
+    const result = await db.query(
+        'DELETE FROM blacklist WHERE discord_id = $1',
+        [discordId]
+    );
+    return result.rowCount > 0;
+}
+
+async function getBlacklist() {
+    const db       = await getDb();
+    const { rows } = await db.query(
+        'SELECT * FROM blacklist ORDER BY blacklisted_at DESC'
+    );
+    return rows.map(r => ({
+        discordId:     r.discord_id,
+        blacklistedAt: r.blacklisted_at,
+        blacklistedBy: r.blacklisted_by,
+        reason:        r.reason,
+    }));
+}
+
 module.exports = {
     createKey,
     redeemKey,
@@ -205,4 +258,8 @@ module.exports = {
     getKeyByDiscordId,
     checkExpired,
     getActiveMachoKeys,
+    isBlacklisted,
+    blacklistUser,
+    unblacklistUser,
+    getBlacklist,
 };

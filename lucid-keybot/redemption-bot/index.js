@@ -207,24 +207,24 @@ if (interaction.commandName === 'blacklist') {
     }
     await interaction.deferReply({ ephemeral: true });
     const sub = interaction.options.getSubcommand();
-    if (sub === 'add') {
-        const machoKey = interaction.options.getString('macho_auth_key').trim();
-        const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
-        const reason = interaction.options.getString('reason') ?? null;
-        
-        // Look up the key in database to get discord_id
-        const db = await require('../shared/keyManager').getDb();
-        const { rows } = await db.query(
-            'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
-            [machoKey, licenseKey]
-        );
-        
-        if (rows.length === 0) {
-            return interaction.editReply({
-                embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
-            });
-        }
+if (sub === 'add') {
+    const machoKey = interaction.options.getString('macho_auth_key').trim();
+    const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
+    const reason = interaction.options.getString('reason') ?? null;
     
+    // Look up the key in database to get discord_id
+    const db = await require('../shared/keyManager').getDb();
+    const { rows } = await db.query(
+        'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
+        [machoKey, licenseKey]
+    );
+    
+    if (rows.length === 0) {
+        return interaction.editReply({
+            embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
+        });
+    }
+
     const targetId = rows[0].discord_id;
     await blacklistUser(targetId, user.tag, reason);
     
@@ -239,7 +239,7 @@ if (interaction.commandName === 'blacklist') {
         .setFooter({ text: `Blacklisted by ${user.tag}` })
         .setTimestamp();
     await interaction.editReply({ embeds: [embed] });
-    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\\`${reason ? ` — *${reason}*` : ''}`);
+    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\`${reason ? ` — *${reason}*` : ''}`);
 }
             if (sub === 'remove') {
                 const targetId = interaction.options.getString('user_id').trim();

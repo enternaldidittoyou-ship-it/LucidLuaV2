@@ -325,8 +325,15 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // Resubscribe
-        if (interaction.customId === 'modal_resubscribe') {
-            await interaction.deferReply({ ephemeral: true });
+if (interaction.customId === 'modal_resubscribe') {
+    await interaction.deferReply({ ephemeral: true });
+
+    // Blacklist check
+    if (await isBlacklisted(user.id)) {
+        return interaction.editReply({
+            embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')]
+        });
+    }
 
             const licenseKey  = interaction.fields.getTextInputValue('input_license_key').trim().toUpperCase();
             const newMachoKey = interaction.fields.getTextInputValue('input_new_macho_key').trim();

@@ -5,9 +5,12 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
     REST, Routes, PermissionFlagsBits
 } = require('discord.js');
-const { redeemKey, resubscribeKey, getKeyByDiscordId, checkExpired } = require('../shared/keyManager');
+const {
+    redeemKey, resubscribeKey, getKeyByDiscordId, checkExpired,
+    isBlacklisted, blacklistUser, unblacklistUser, getBlacklist,
+} = require('../shared/keyManager');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 const commands = [
     new SlashCommandBuilder()
@@ -18,6 +21,32 @@ const commands = [
     new SlashCommandBuilder()
         .setName('mystatus')
         .setDescription('Check the status of your LucidLua license'),
+
+    new SlashCommandBuilder()
+        .setName('blacklist')
+        .setDescription('[ADMIN] Manage the redemption blacklist')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(sub => sub
+            .setName('add')
+            .setDescription('Blacklist a user from redeeming keys')
+            .addStringOption(opt => opt
+                .setName('user_id')
+                .setDescription('Discord user ID to blacklist')
+                .setRequired(true))
+            .addStringOption(opt => opt
+                .setName('reason')
+                .setDescription('Reason for blacklisting')
+                .setRequired(false)))
+        .addSubcommand(sub => sub
+            .setName('remove')
+            .setDescription('Remove a user from the blacklist')
+            .addStringOption(opt => opt
+                .setName('user_id')
+                .setDescription('Discord user ID to remove')
+                .setRequired(true)))
+        .addSubcommand(sub => sub
+            .setName('list')
+            .setDescription('Show all blacklisted users')),
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -158,6 +187,68 @@ client.on('interactionCreate', async (interaction) => {
 
             return interaction.editReply({ embeds: [embed] });
         }
+
+        if (interaction.commandName === 'blacklist') {
+            await interaction.deferReply({ ephemeral: true });
+            const sub = interaction.options.getSubcommand();
+
+            if (sub === 'add') {
+                const targetId = interaction.options.getString('user_id').trim();
+                const reason   = interaction.options.getString('reason') ?? null;
+                await blacklistUser(targetId, user.tag, reason);
+                const embed = new EmbedBuilder()
+                    .setTitle('🚫 User Blacklisted')
+                    .setColor(0xff4444)
+                    .addFields(
+                        { name: '👤 User ID', value: targetId, inline: true },
+                        { name: '📝 Reason',  value: reason ?? 'No reason provided', inline: true },
+                    )
+                    .setFooter({ text: `Blacklisted by ${user.tag}` })
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [embed] });
+                logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\`${reason ? ` — *${reason}*` : ''}`);
+            }
+
+            if (sub === 'remove') {
+                const targetId = interaction.options.getString('user_id').trim();
+                const removed  = await unblacklistUser(targetId);
+                if (!removed) {
+                    return interaction.editReply({
+                        embeds: [errorEmbed('Not Blacklisted', `User \`${targetId}\` is not on the blacklist.`)]
+                    });
+                }
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ User Removed from Blacklist')
+                    .setColor(0x00ff88)
+                    .addFields({ name: '👤 User ID', value: targetId, inline: true })
+                    .setFooter({ text: `Removed by ${user.tag}` })
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [embed] });
+                logToStaffChannel(client, `✅ **${user.tag}** removed \`${targetId}\` from the blacklist`);
+            }
+
+            if (sub === 'list') {
+                const entries = await getBlacklist();
+                if (entries.length === 0) {
+                    return interaction.editReply({
+                        embeds: [new EmbedBuilder()
+                            .setTitle('📋 Blacklist')
+                            .setDescription('The blacklist is currently empty.')
+                            .setColor(0x5865f2)
+                            .setTimestamp()]
+                    });
+                }
+                const lines = entries.map((e, i) =>
+                    `**${i + 1}.** \`${e.discordId}\`${e.reason ? ` — ${e.reason}` : ''} *(by ${e.blacklistedBy ?? 'unknown'}, <t:${Math.floor(new Date(e.blacklistedAt).getTime() / 1000)}:R>)*`
+                ).join('\n');
+                const embed = new EmbedBuilder()
+                    .setTitle(`📋 Blacklist (${entries.length})`)
+                    .setDescription(lines.length > 4000 ? lines.slice(0, 4000) + '\n…' : lines)
+                    .setColor(0x5865f2)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed] });
+            }
+        }
     }
 
     // ── Buttons ───────────────────────────────────────────────────────────────
@@ -172,6 +263,13 @@ client.on('interactionCreate', async (interaction) => {
         // Redeem
         if (interaction.customId === 'modal_redeem') {
             await interaction.deferReply({ ephemeral: true });
+
+            // Blacklist check
+            if (await isBlacklisted(user.id)) {
+                return interaction.editReply({
+                    embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')]
+                });
+            }
 
             const licenseKey = interaction.fields.getTextInputValue('input_license_key').trim().toUpperCase();
             const machoKey   = interaction.fields.getTextInputValue('input_macho_key').trim();
@@ -214,6 +312,16 @@ client.on('interactionCreate', async (interaction) => {
 
             await interaction.editReply({ embeds: [embed] });
             logToStaffChannel(client, `🎉 **${user.tag}** redeemed \`${licenseKey}\` (expires: ${entry.expiresAt ?? 'lifetime'})`);
+
+            // Assign Customer role
+            if (process.env.CUSTOMER_ROLE_ID) {
+                try {
+                    const member = await interaction.guild.members.fetch(user.id);
+                    await member.roles.add(process.env.CUSTOMER_ROLE_ID);
+                } catch (err) {
+                    console.error(`[RedemptionBot] Failed to assign Customer role to ${user.tag}:`, err);
+                }
+            }
         }
 
         // Resubscribe

@@ -7,18 +7,31 @@ const {
 } = require('discord.js');
 const {
     redeemKey, resubscribeKey, getKeyByDiscordId, checkExpired,
-    isBlacklisted, blacklistUser, unblacklistUser, getBlacklist,
+    isBlacklisted, blacklistUser, unblacklistUser, getBlacklist, getDb,
 } = require('../shared/keyManager');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+    ]
+});
 
-function isStaff(member) {
- const staffRoleId = process.env.STAFF_ROLE_ID;
- if (!staffRoleId) return member.permissions.has(PermissionFlagsBits.Administrator);
- return member.roles.cache.has(staffRoleId);
+// ─── Staff Check ───────────────────────────────────────────────────────────────
+async function isStaff(interaction) {
+    try {
+        // Always fetch fresh from Discord — never rely on cache
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        const staffRoleId = process.env.STAFF_ROLE_ID;
+        if (!staffRoleId) return member.permissions.has(PermissionFlagsBits.Administrator);
+        return member.roles.cache.has(staffRoleId) || member.permissions.has(PermissionFlagsBits.Administrator);
+    } catch {
+        // Fallback: check permissions from the interaction directly
+        return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+    }
 }
 
-
+// ─── Commands ──────────────────────────────────────────────────────────────────
 const commands = [
     new SlashCommandBuilder()
         .setName('redeem_button')
@@ -33,31 +46,20 @@ const commands = [
         .setName('blacklist')
         .setDescription('[ADMIN] Manage the redemption blacklist')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-.addSubcommand(sub => sub
-    .setName('add')
-    .setDescription('Blacklist a user by macho auth key and license key')
-    .addStringOption(opt => opt
-        .setName('macho_auth_key')
-        .setDescription('Macho authentication key')
-        .setRequired(true))
-    .addStringOption(opt => opt
-        .setName('license_key')
-        .setDescription('LucidLua license key')
-        .setRequired(true))
-    .addStringOption(opt => opt
-        .setName('reason')
-        .setDescription('Reason for blacklisting')
-        .setRequired(false)))
+        .addSubcommand(sub => sub
+            .setName('add')
+            .setDescription('Blacklist a user by macho auth key and license key')
+            .addStringOption(opt => opt.setName('macho_auth_key').setDescription('Macho authentication key').setRequired(true))
+            .addStringOption(opt => opt.setName('license_key').setDescription('LucidLua license key').setRequired(true))
+            .addStringOption(opt => opt.setName('reason').setDescription('Reason for blacklisting').setRequired(false)))
         .addSubcommand(sub => sub
             .setName('remove')
             .setDescription('Remove a user from the blacklist')
-            .addStringOption(opt => opt
-                .setName('user_id')
-                .setDescription('Discord user ID to remove')
-                .setRequired(true)))
+            .addStringOption(opt => opt.setName('user_id').setDescription('Discord user ID to remove').setRequired(true)))
         .addSubcommand(sub => sub
             .setName('list')
             .setDescription('Show all blacklisted users')),
+
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -74,10 +76,10 @@ async function registerCommands() {
     }
 }
 
+// ─── Panel + Modals ────────────────────────────────────────────────────────────
 function buildRedeemPanel() {
     const now     = new Date();
     const dateStr = `${now.getMonth()+1}/${now.getDate()}/${now.getFullYear()} ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-
     const embed = new EmbedBuilder()
         .setTitle('Redeem / Resubscribe')
         .setDescription(
@@ -90,16 +92,9 @@ function buildRedeemPanel() {
         .setFooter({ text: dateStr });
 
     const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('open_redeem_modal')
-            .setLabel('Redeem Key')
-            .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-            .setCustomId('open_resubscribe_modal')
-            .setLabel('Resubscribe')
-            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Key').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('open_resubscribe_modal').setLabel('Resubscribe').setStyle(ButtonStyle.Secondary),
     );
-
     return { embeds: [embed], components: [row] };
 }
 
@@ -109,22 +104,12 @@ function buildRedeemModal() {
         .setTitle('Redeem Key')
         .addComponents(
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId('input_license_key')
-                    .setLabel('LucidLua Key')
-                    .setPlaceholder('LucidLua-XXXXX-XXXXX-XXXXX')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setMaxLength(40)
+                new TextInputBuilder().setCustomId('input_license_key').setLabel('LucidLua Key')
+                    .setPlaceholder('LucidLua-XXXXX-XXXXX-XXXXX').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)
             ),
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId('input_macho_key')
-                    .setLabel('Authentication Key')
-                    .setPlaceholder('Enter your authentication key')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setMaxLength(100)
+                new TextInputBuilder().setCustomId('input_macho_key').setLabel('Authentication Key')
+                    .setPlaceholder('Enter your authentication key').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
             ),
         );
 }
@@ -135,56 +120,47 @@ function buildResubscribeModal() {
         .setTitle('Resubscribe')
         .addComponents(
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId('input_license_key')
-                    .setLabel('LucidLua Key')
-                    .setPlaceholder('LucidLua-XXXXX-XXXXX-XXXXX')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setMaxLength(40)
+                new TextInputBuilder().setCustomId('input_license_key').setLabel('LucidLua Key')
+                    .setPlaceholder('LucidLua-XXXXX-XXXXX-XXXXX').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)
             ),
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId('input_new_macho_key')
-                    .setLabel('New Authentication Key')
-                    .setPlaceholder('Enter your new authentication key')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setMaxLength(100)
+                new TextInputBuilder().setCustomId('input_new_macho_key').setLabel('New Authentication Key')
+                    .setPlaceholder('Enter your new authentication key').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
             ),
         );
 }
 
+// ─── Interactions ──────────────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
     await checkExpired();
     const { user } = interaction;
 
     // ── Slash Commands ────────────────────────────────────────────────────────
-if (interaction.isChatInputCommand()) {
-    if (interaction.commandName === 'redeem_button') {
-        if (!isStaff(interaction.member)) {
-            return interaction.reply({ content: '❌ You need a staff role to use this command.', ephemeral: true });
-        }
-        await interaction.reply({ content: '✅ Panel posted!', ephemeral: true });
-        await interaction.channel.send(buildRedeemPanel());
-    }
+    if (interaction.isChatInputCommand()) {
 
+        // /redeem_button
+        if (interaction.commandName === 'redeem_button') {
+            if (!await isStaff(interaction)) {
+                return interaction.reply({ embeds: [errorEmbed('Access Denied', 'You need a staff role to use this command.')], ephemeral: true });
+            }
+            await interaction.reply({ content: '✅ Panel posted!', ephemeral: true });
+            await interaction.channel.send(buildRedeemPanel());
+        }
+
+        // /mystatus
         if (interaction.commandName === 'mystatus') {
             await interaction.deferReply({ ephemeral: true });
             const data = await getKeyByDiscordId(user.id);
-
             if (!data) {
                 return interaction.editReply({
                     embeds: [errorEmbed('No Key Found', "You haven't redeemed a key yet. Click **Redeem Key** in the redeem channel.")]
                 });
             }
-
             const now     = new Date();
             const expired = data.expiresAt && new Date(data.expiresAt) < now;
             const expiry  = data.expiresAt
                 ? `<t:${Math.floor(new Date(data.expiresAt).getTime() / 1000)}:R>`
                 : '**Lifetime** ♾️';
-
             const embed = new EmbedBuilder()
                 .setTitle(expired ? '❌ License Expired' : '🟢 License Active')
                 .setColor(expired ? 0xff4444 : data.active ? 0x00ff88 : 0xff8800)
@@ -195,66 +171,55 @@ if (interaction.isChatInputCommand()) {
                     { name: '📌 Status',      value: !data.active ? '🔴 Revoked' : expired ? '🔴 Expired' : '🟢 Active', inline: true },
                     { name: '📆 Redeemed',    value: data.redeemedAt ? `<t:${Math.floor(new Date(data.redeemedAt).getTime() / 1000)}:D>` : 'N/A', inline: true },
                 )
-                .setFooter({ text: 'LucidLua' })
-                .setTimestamp();
-
+                .setFooter({ text: 'LucidLua' }).setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
 
-if (interaction.commandName === 'blacklist') {
-    if (!isStaff(interaction.member)) {
-        return interaction.reply({ content: '❌ You need a staff role to use this command.', ephemeral: true });
-    }
-    await interaction.deferReply({ ephemeral: true });
-    const sub = interaction.options.getSubcommand();
-if (sub === 'add') {
-    const machoKey = interaction.options.getString('macho_auth_key').trim();
-    const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
-    const reason = interaction.options.getString('reason') ?? null;
-    
-    // Look up the key in database to get discord_id
-    const db = await require('../shared/keyManager').getDb();
-    const { rows } = await db.query(
-        'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
-        [machoKey, licenseKey]
-    );
-    
-    if (rows.length === 0) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')]
-        });
-    }
+        // /blacklist
+        if (interaction.commandName === 'blacklist') {
+            if (!await isStaff(interaction)) {
+                return interaction.reply({ embeds: [errorEmbed('Access Denied', 'You need a staff role to use this command.')], ephemeral: true });
+            }
+            await interaction.deferReply({ ephemeral: true });
+            const sub = interaction.options.getSubcommand();
 
-    const targetId = rows[0].discord_id;
-    await blacklistUser(targetId, user.tag, reason);
-    
-    const embed = new EmbedBuilder()
-        .setTitle('🚫 User Blacklisted')
-        .setColor(0xff4444)
-        .addFields(
-            { name: '👤 User ID', value: targetId, inline: true },
-            { name: '🔑 License Key', value: licenseKey, inline: true },
-            { name: '📝 Reason', value: reason ?? 'No reason provided', inline: true },
-        )
-        .setFooter({ text: `Blacklisted by ${user.tag}` })
-        .setTimestamp();
-    await interaction.editReply({ embeds: [embed] });
-    logToStaffChannel(client, `🚫 **${user.tag}** blacklisted user \`${targetId}\`${reason ? ` — *${reason}*` : ''}`);
-}
+            if (sub === 'add') {
+                const machoKey   = interaction.options.getString('macho_auth_key').trim();
+                const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
+                const reason     = interaction.options.getString('reason') ?? null;
+
+                const db       = await getDb();
+                const { rows } = await db.query(
+                    'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
+                    [machoKey, licenseKey]
+                );
+                if (rows.length === 0) {
+                    return interaction.editReply({ embeds: [errorEmbed('Key Not Found', 'No key found with those credentials.')] });
+                }
+                const targetId = rows[0].discord_id;
+                await blacklistUser(targetId, user.tag, reason);
+                const embed = new EmbedBuilder()
+                    .setTitle('🚫 User Blacklisted').setColor(0xff4444)
+                    .addFields(
+                        { name: '👤 User ID',     value: targetId,                      inline: true },
+                        { name: '🔑 License Key', value: licenseKey,                    inline: true },
+                        { name: '📝 Reason',      value: reason ?? 'No reason provided', inline: true },
+                    )
+                    .setFooter({ text: `Blacklisted by ${user.tag}` }).setTimestamp();
+                await interaction.editReply({ embeds: [embed] });
+                logToStaffChannel(client, `🚫 **${user.tag}** blacklisted \`${targetId}\`${reason ? ` — *${reason}*` : ''}`);
+            }
+
             if (sub === 'remove') {
                 const targetId = interaction.options.getString('user_id').trim();
                 const removed  = await unblacklistUser(targetId);
                 if (!removed) {
-                    return interaction.editReply({
-                        embeds: [errorEmbed('Not Blacklisted', `User \`${targetId}\` is not on the blacklist.`)]
-                    });
+                    return interaction.editReply({ embeds: [errorEmbed('Not Blacklisted', `User \`${targetId}\` is not on the blacklist.`)] });
                 }
                 const embed = new EmbedBuilder()
-                    .setTitle('✅ User Removed from Blacklist')
-                    .setColor(0x00ff88)
+                    .setTitle('✅ Removed from Blacklist').setColor(0x00ff88)
                     .addFields({ name: '👤 User ID', value: targetId, inline: true })
-                    .setFooter({ text: `Removed by ${user.tag}` })
-                    .setTimestamp();
+                    .setFooter({ text: `Removed by ${user.tag}` }).setTimestamp();
                 await interaction.editReply({ embeds: [embed] });
                 logToStaffChannel(client, `✅ **${user.tag}** removed \`${targetId}\` from the blacklist`);
             }
@@ -263,22 +228,15 @@ if (sub === 'add') {
                 const entries = await getBlacklist();
                 if (entries.length === 0) {
                     return interaction.editReply({
-                        embeds: [new EmbedBuilder()
-                            .setTitle('📋 Blacklist')
-                            .setDescription('The blacklist is currently empty.')
-                            .setColor(0x5865f2)
-                            .setTimestamp()]
+                        embeds: [new EmbedBuilder().setTitle('📋 Blacklist').setDescription('The blacklist is currently empty.').setColor(0x5865f2).setTimestamp()]
                     });
                 }
                 const lines = entries.map((e, i) =>
-                    `**${i + 1}.** \`${e.discordId}\`${e.reason ? ` — ${e.reason}` : ''} *(by ${e.blacklistedBy ?? 'unknown'}, <t:${Math.floor(new Date(e.blacklistedAt).getTime() / 1000)}:R>)*`
+                    `**${i+1}.** \`${e.discordId}\`${e.reason ? ` — ${e.reason}` : ''} *(by ${e.blacklistedBy ?? 'unknown'}, <t:${Math.floor(new Date(e.blacklistedAt).getTime()/1000)}:R>)*`
                 ).join('\n');
-                const embed = new EmbedBuilder()
-                    .setTitle(`📋 Blacklist (${entries.length})`)
-                    .setDescription(lines.length > 4000 ? lines.slice(0, 4000) + '\n…' : lines)
-                    .setColor(0x5865f2)
-                    .setTimestamp();
-                return interaction.editReply({ embeds: [embed] });
+                return interaction.editReply({
+                    embeds: [new EmbedBuilder().setTitle(`📋 Blacklist (${entries.length})`).setDescription(lines.slice(0,4000)).setColor(0x5865f2).setTimestamp()]
+                });
             }
         }
     }
@@ -295,43 +253,28 @@ if (sub === 'add') {
         // Redeem
         if (interaction.customId === 'modal_redeem') {
             await interaction.deferReply({ ephemeral: true });
-
-            // Blacklist check
             if (await isBlacklisted(user.id)) {
-                return interaction.editReply({
-                    embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')]
-                });
+                return interaction.editReply({ embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')] });
             }
-
             const licenseKey = interaction.fields.getTextInputValue('input_license_key').trim().toUpperCase();
             const machoKey   = interaction.fields.getTextInputValue('input_macho_key').trim();
-
             const keyPattern = /^LUCIDLUA-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/;
             if (!keyPattern.test(licenseKey)) {
-                return interaction.editReply({
-                    embeds: [errorEmbed('Invalid Key Format', 'Your license key must be in this format:\n`LucidLua-XXXXX-XXXXX-XXXXX`')]
-                });
+                return interaction.editReply({ embeds: [errorEmbed('Invalid Key Format', 'Your license key must be in this format:\n`LucidLua-XXXXX-XXXXX-XXXXX`')] });
             }
             if (!machoKey || machoKey.length < 3) {
-                return interaction.editReply({
-                    embeds: [errorEmbed('Invalid Auth Key', 'Please enter your MachoAuthenticationKey from the menu.')]
-                });
+                return interaction.editReply({ embeds: [errorEmbed('Invalid Auth Key', 'Please enter your MachoAuthenticationKey from the menu.')] });
             }
-
             const result = await redeemKey(licenseKey, machoKey, user.id, user.tag);
-
             if (!result.success) {
                 return interaction.editReply({ embeds: [errorEmbed('Redemption Failed', result.reason)] });
             }
-
             const { entry } = result;
             const expiry = entry.expiresAt
                 ? `<t:${Math.floor(new Date(entry.expiresAt).getTime() / 1000)}:F>`
                 : '**Lifetime** ♾️';
-
             const embed = new EmbedBuilder()
-                .setTitle('✅ Key Redeemed Successfully')
-                .setColor(0x00ff88)
+                .setTitle('✅ Key Redeemed Successfully').setColor(0x00ff88)
                 .setDescription('Your Authentication Key has been registered.\nThe menu will now authenticate you automatically.')
                 .addFields(
                     { name: '🔑 License Key', value: `\`${licenseKey}\``, inline: false },
@@ -339,9 +282,7 @@ if (sub === 'add') {
                     { name: '📅 Expires',     value: expiry,              inline: true  },
                     { name: '✅ Status',      value: 'Active',            inline: true  },
                 )
-                .setFooter({ text: 'LucidLua • Never share your Auth Key!' })
-                .setTimestamp();
-
+                .setFooter({ text: 'LucidLua • Never share your Auth Key!' }).setTimestamp();
             await interaction.editReply({ embeds: [embed] });
             logToStaffChannel(client, `🎉 **${user.tag}** redeemed \`${licenseKey}\` (expires: ${entry.expiresAt ?? 'lifetime'})`);
 
@@ -351,61 +292,46 @@ if (sub === 'add') {
                     const member = await interaction.guild.members.fetch(user.id);
                     await member.roles.add(process.env.CUSTOMER_ROLE_ID);
                 } catch (err) {
-                    console.error(`[RedemptionBot] Failed to assign Customer role to ${user.tag}:`, err);
+                    console.error(`[RedemptionBot] Failed to assign Customer role:`, err);
                 }
             }
         }
 
         // Resubscribe
-if (interaction.customId === 'modal_resubscribe') {
-    await interaction.deferReply({ ephemeral: true });
-
-    // Blacklist check
-    if (await isBlacklisted(user.id)) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')]
-        });
-    }
-
+        if (interaction.customId === 'modal_resubscribe') {
+            await interaction.deferReply({ ephemeral: true });
+            if (await isBlacklisted(user.id)) {
+                return interaction.editReply({ embeds: [errorEmbed('Blacklisted', 'You have been blacklisted and cannot redeem keys.')] });
+            }
             const licenseKey  = interaction.fields.getTextInputValue('input_license_key').trim().toUpperCase();
             const newMachoKey = interaction.fields.getTextInputValue('input_new_macho_key').trim();
-
-            const keyPattern = /^LUCIDLUA-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/;
+            const keyPattern  = /^LUCIDLUA-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/;
             if (!keyPattern.test(licenseKey)) {
-                return interaction.editReply({
-                    embeds: [errorEmbed('Invalid Key Format', 'Your license key must be in this format:\n`LucidLua-XXXXX-XXXXX-XXXXX`')]
-                });
+                return interaction.editReply({ embeds: [errorEmbed('Invalid Key Format', 'Your license key must be in this format:\n`LucidLua-XXXXX-XXXXX-XXXXX`')] });
             }
             if (!newMachoKey || newMachoKey.length < 3) {
-                return interaction.editReply({
-                    embeds: [errorEmbed('Invalid Auth Key', 'Please enter your new MachoAuthenticationKey.')]
-                });
+                return interaction.editReply({ embeds: [errorEmbed('Invalid Auth Key', 'Please enter your new MachoAuthenticationKey.')] });
             }
-
             const result = await resubscribeKey(licenseKey, newMachoKey, user.id, user.tag);
-
             if (!result.success) {
                 return interaction.editReply({ embeds: [errorEmbed('Resubscribe Failed', result.reason)] });
             }
-
             const embed = new EmbedBuilder()
-                .setTitle('🔄 Resubscribed Successfully')
-                .setColor(0x5865f2)
+                .setTitle('🔄 Resubscribed Successfully').setColor(0x5865f2)
                 .setDescription('Your Authentication Key has been updated on your existing active license.')
                 .addFields(
                     { name: '🔑 License Key',  value: `\`${licenseKey}\``,  inline: false },
                     { name: '🔐 New Auth Key', value: `\`${newMachoKey}\``, inline: false },
                     { name: '✅ Status',       value: 'Active',             inline: true  },
                 )
-                .setFooter({ text: 'LucidLua • Never share your Auth Key!' })
-                .setTimestamp();
-
+                .setFooter({ text: 'LucidLua • Never share your Auth Key!' }).setTimestamp();
             await interaction.editReply({ embeds: [embed] });
             logToStaffChannel(client, `🔄 **${user.tag}** resubscribed \`${licenseKey}\` with a new auth key`);
         }
     }
 });
 
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 function errorEmbed(title, description) {
     return new EmbedBuilder()
         .setTitle(`❌ ${title}`)
@@ -423,6 +349,7 @@ async function logToStaffChannel(client, message) {
     } catch {}
 }
 
+// ─── Boot ──────────────────────────────────────────────────────────────────────
 client.once('ready', async () => {
     console.log(`[RedemptionBot] Logged in as ${client.user.tag}`);
     await registerCommands();

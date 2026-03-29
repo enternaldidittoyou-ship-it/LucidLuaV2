@@ -188,7 +188,7 @@ client.on('interactionCreate', async (interaction) => {
                 const licenseKey = interaction.options.getString('license_key').trim().toUpperCase();
                 const reason     = interaction.options.getString('reason') ?? null;
 
-                const db       = await getDb();
+                const db = await getDb();
                 const { rows } = await db.query(
                     'SELECT discord_id FROM keys WHERE macho_key = $1 AND UPPER(license_key) = UPPER($2)',
                     [machoKey, licenseKey]

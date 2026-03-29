@@ -12,13 +12,6 @@ const {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-function isStaff(member) {
-    if (!process.env.STAFF_ROLE_IDS) return false;
-    const staffRoles = process.env.STAFF_ROLE_IDS.split(',').map(id => id.trim());
-    return member.roles.cache.some(role => staffRoles.includes(role.id));
-}
-
-
 const commands = [
     new SlashCommandBuilder()
         .setName('redeem_button')

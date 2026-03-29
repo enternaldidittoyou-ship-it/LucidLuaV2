@@ -94,9 +94,9 @@ async function createKey(duration, createdBy) {
 }
 
 async function redeemKey(licenseKey, machoKey, discordId, discordTag) {
-    const db           = await getDb();
-    const { rows }     = await db.query('SELECT * FROM keys WHERE UPPER(license_key) = UPPER($1)', [licenseKey]);
-    const entry        = rows[0];
+    const db       = await getDb();
+    const { rows } = await db.query('SELECT * FROM keys WHERE UPPER(license_key) = UPPER($1)', [licenseKey]);
+    const entry    = rows[0];
 
     if (!entry)            return { success: false, reason: 'Key not found.' };
     if (!entry.active)     return { success: false, reason: 'This key has been deactivated.' };
@@ -136,8 +136,8 @@ async function resubscribeKey(licenseKey, newMachoKey, discordId, discordTag) {
     const { rows } = await db.query('SELECT * FROM keys WHERE UPPER(license_key) = UPPER($1)', [licenseKey]);
     const entry    = rows[0];
 
-    if (!entry)            return { success: false, reason: 'Key not found.' };
-    if (!entry.active)     return { success: false, reason: 'This key has been deactivated.' };
+    if (!entry)             return { success: false, reason: 'Key not found.' };
+    if (!entry.active)      return { success: false, reason: 'This key has been deactivated.' };
     if (!entry.redeemed_at) return { success: false, reason: 'This key has not been redeemed yet. Use Redeem Key instead.' };
     if (entry.expires_at && new Date(entry.expires_at) < new Date()) {
         return { success: false, reason: 'This key has expired.' };
@@ -204,13 +204,10 @@ async function getActiveMachoKeys() {
     return rows.map(r => r.macho_key).join('\n');
 }
 
-// ─── Blacklist Functions ───────────────────────────────────────────────────────
+// ─── Blacklist ─────────────────────────────────────────────────────────────────
 async function isBlacklisted(discordId) {
     const db           = await getDb();
-    const { rowCount } = await db.query(
-        'SELECT 1 FROM blacklist WHERE discord_id = $1',
-        [discordId]
-    );
+    const { rowCount } = await db.query('SELECT 1 FROM blacklist WHERE discord_id = $1', [discordId]);
     return rowCount > 0;
 }
 
@@ -229,18 +226,13 @@ async function blacklistUser(discordId, blacklistedBy, reason) {
 
 async function unblacklistUser(discordId) {
     const db     = await getDb();
-    const result = await db.query(
-        'DELETE FROM blacklist WHERE discord_id = $1',
-        [discordId]
-    );
+    const result = await db.query('DELETE FROM blacklist WHERE discord_id = $1', [discordId]);
     return result.rowCount > 0;
 }
 
 async function getBlacklist() {
     const db       = await getDb();
-    const { rows } = await db.query(
-        'SELECT * FROM blacklist ORDER BY blacklisted_at DESC'
-    );
+    const { rows } = await db.query('SELECT * FROM blacklist ORDER BY blacklisted_at DESC');
     return rows.map(r => ({
         discordId:     r.discord_id,
         blacklistedAt: r.blacklisted_at,
@@ -249,7 +241,9 @@ async function getBlacklist() {
     }));
 }
 
+// ─── Exports ───────────────────────────────────────────────────────────────────
 module.exports = {
+    getDb,
     createKey,
     redeemKey,
     resubscribeKey,
